@@ -1,3 +1,5 @@
+- Fail traditional errata and package actions when they act on retracted items
+- Add advisory_status to reposync and ISS
 - Fixed kickstart tree permissions to a+r.
 - Avoid race condition due multiple reposync import threads (bsc#1183151)
 
