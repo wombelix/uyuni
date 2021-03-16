@@ -26,6 +26,7 @@ import com.redhat.rhn.domain.action.ActionChain;
 import com.redhat.rhn.domain.action.ActionChainFactory;
 import com.redhat.rhn.domain.action.salt.ApplyStatesAction;
 import com.redhat.rhn.domain.config.ConfigChannel;
+import com.redhat.rhn.domain.formula.FormulaFactory;
 import com.redhat.rhn.domain.org.Org;
 import com.redhat.rhn.domain.org.OrgFactory;
 import com.redhat.rhn.domain.rhnpackage.PackageArch;
@@ -75,6 +76,7 @@ import com.suse.manager.webui.utils.gson.ServerApplyHighstateJson;
 import com.suse.manager.webui.utils.gson.ServerApplyStatesJson;
 import com.suse.manager.webui.utils.gson.ServerConfigChannelsJson;
 import com.suse.manager.webui.utils.gson.ServerPackageStatesJson;
+import com.suse.manager.webui.utils.gson.StateSourceJson;
 import com.suse.manager.webui.utils.gson.StateTargetType;
 import com.suse.salt.netapi.datatypes.target.MinionList;
 import com.suse.salt.netapi.exception.SaltException;
@@ -156,6 +158,7 @@ public class StatesAPI {
         post("/manager/api/states/packages/save", withUser(this::savePackages));
         get("/manager/api/states/packages/match", this::matchPackages);
         get("/manager/api/states/highstate", this::showHighstate);
+        get("/manager/api/states/summary", this::listSummary);
         get("/manager/api/states/:channelId/content", withUser(this::stateContent));
     }
 
@@ -725,5 +728,56 @@ public class StatesAPI {
                         return e.getMessage();
                     }
                 }).orElse("Server not found.");
+    }
+
+    public String listSummary(Request request, Response response) {
+        return MinionServerFactory
+                .lookupById(Long.valueOf(request.queryParams("sid")))
+                .map(minion -> {
+                    // Collect all the states and formulas assigned or inherited in a Stream
+
+                    // Keep track of the processed states to avoid listing same states from multiple sources
+                    Set<ConfigChannel> processedStates = new HashSet<>();
+                    Set<String> processedFormulas = new HashSet<>();
+
+                    // System states
+                    Stream<StateSourceJson> stateOrigins =
+                            StateFactory.latestConfigChannels(minion).stream().flatMap(c -> getStateSourceJson(c, minion, processedStates));
+
+                    // System formulas
+                    stateOrigins = Stream.concat(stateOrigins,
+                            getFormulaSourceJson(FormulaFactory.getFormulasByMinionId(minion.getMinionId()), minion, processedFormulas));
+
+                    // Group states
+                    stateOrigins = Stream.concat(stateOrigins,
+                            minion.getGroups().stream().flatMap(g -> StateFactory.latestConfigChannels(g).stream().flatMap(c -> getStateSourceJson(c, g, processedStates))));
+
+                    // Group formulas
+                    stateOrigins = Stream.concat(stateOrigins,
+                            minion.getGroups().stream().flatMap(g -> getFormulaSourceJson(FormulaFactory.getFormulasByGroupId(g.getId()), g, processedFormulas)));
+
+                    // Org states
+                    stateOrigins = Stream.concat(stateOrigins,
+                            StateFactory.latestConfigChannels(minion.getOrg()).stream().flatMap(c -> getStateSourceJson(c, minion.getOrg(), processedStates)));
+
+                    // Internal states
+                    stateOrigins = Stream.concat(stateOrigins, Stream.of(StateSourceJson.internalState()));
+
+                    return json(response, stateOrigins.collect(Collectors.toList()));
+                }).orElse("Server not found.");
+    }
+
+    private Stream<StateSourceJson> getStateSourceJson(List<ConfigChannel> channels, SaltConfigurable source, Set<ConfigChannel> processed) {
+        return channels.stream().filter(c -> !processed.contains(c)).map(c -> {
+            processed.add(c);
+            return StateSourceJson.originFrom(c, source);
+        });
+    }
+
+    private Stream<StateSourceJson> getFormulaSourceJson(List<String> formulas, SaltConfigurable source, Set<String> processed) {
+        return formulas.stream().filter(c -> !processed.contains(c)).map(c -> {
+            processed.add(c);
+            return StateSourceJson.originFrom(c, source);
+        });
     }
 }
